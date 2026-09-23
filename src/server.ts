@@ -2,14 +2,10 @@ import "dotenv/config";
 import Fastify from "fastify";
 import { verifyGithubSignature } from "./github/verifySignature.js";
 import { supabase } from "./db/supabase.js";
+import { processReview } from "./pipeline/processReview.js";
 
 const app = Fastify({ logger: true });
 
-// Capture the raw request body BEFORE Fastify parses it as JSON.
-// HMAC signature verification must run against the exact bytes GitHub
-// signed - if we verify against the re-serialized JSON object instead,
-// formatting differences (key order, whitespace) can make a valid
-// signature fail.
 app.addContentTypeParser(
   "application/json",
   { parseAs: "string" },
@@ -50,29 +46,51 @@ app.post("/webhooks/github", async (request, reply) => {
 
   const payload = request.body as any;
 
-  // Only act on PR opens and new pushes to an existing PR for now.
   if (payload.action !== "opened" && payload.action !== "synchronize") {
     return reply.code(202).send({ status: "ignored", reason: `unhandled action: ${payload.action}` });
   }
 
-  const repo = payload.repository.full_name;
+  const repoFullName = payload.repository.full_name;
+  const owner = payload.repository.owner.login;
+  const repoName = payload.repository.name;
   const prNumber = payload.pull_request.number;
   const commitSha = payload.pull_request.head.sha;
 
-  const { error } = await supabase.from("reviews").insert({
-    repo,
-    pr_number: prNumber,
-    commit_sha: commitSha,
-    status: "pending",
-  });
+  const { data: inserted, error } = await supabase
+    .from("reviews")
+    .insert({
+      repo: repoFullName,
+      pr_number: prNumber,
+      commit_sha: commitSha,
+      status: "pending",
+    })
+    .select()
+    .single();
 
-  if (error) {
-    request.log.error(error);
+  if (error || !inserted) {
+    request.log.error(error, "failed to persist review");
     return reply.code(500).send({ error: "failed to persist review" });
   }
 
-  request.log.info(`Recorded review for ${repo}#${prNumber} @ ${commitSha}`);
-  return reply.code(201).send({ status: "accepted" });
+  request.log.info(`Recorded review ${inserted.id} for ${repoFullName}#${prNumber} @ ${commitSha}`);
+
+  // Respond to GitHub immediately - don't make it wait on the LLM call.
+  // GitHub times out webhook deliveries after ~10 seconds; an LLM call
+  // plus GitHub diff fetch can easily take longer than that. We reply
+  // first, then keep processing in the background. This is a deliberate
+  // "no queue needed yet" decision (see the architecture doc, section 5.8) -
+  // it's not durable against a server restart mid-review, which is a
+  // documented, honest limitation at this stage, not an oversight.
+  reply.code(201).send({ status: "accepted", reviewId: inserted.id });
+
+  processReview({
+    reviewId: inserted.id,
+    owner,
+    repo: repoName,
+    prNumber,
+  }).catch((err) => {
+    request.log.error(err, `processReview failed for review ${inserted.id}`);
+  });
 });
 
 const port = Number(process.env.PORT) || 3000;
