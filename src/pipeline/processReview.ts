@@ -1,15 +1,24 @@
 import { supabase } from "../db/supabase.js";
 import { fetchPullRequestDiff } from "../github/fetchDiff.js";
 import { reviewDiff } from "../llm/reviewDiff.js";
+import { validateFindings } from "../validator/validateFindings.js";
+import { postReviewComment } from "../github/postComment.js";
 
 interface ProcessReviewInput {
   reviewId: string;
   owner: string;
   repo: string;
   prNumber: number;
+  commitSha: string;
 }
 
-export async function processReview({ reviewId, owner, repo, prNumber }: ProcessReviewInput) {
+export async function processReview({
+  reviewId,
+  owner,
+  repo,
+  prNumber,
+  commitSha,
+}: ProcessReviewInput) {
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN is not set");
 
@@ -19,28 +28,66 @@ export async function processReview({ reviewId, owner, repo, prNumber }: Process
     const diff = await fetchPullRequestDiff(owner, repo, prNumber, token);
     const { findings, promptTokens, completionTokens, latencyMs } = await reviewDiff(diff);
 
-    // Note: nothing is validated or posted to the PR yet - that's Day 4.
-    // Today we just prove the pipeline produces and persists structured
-    // findings end to end.
-    if (findings.length > 0) {
-      const rows = findings.map((f) => ({
+    // Independently check every AI finding against the real diff before
+    // anything is persisted as "validated" or posted anywhere.
+    const validationResults = validateFindings(diff, findings);
+
+    const insertedRows: { id: string; valid: boolean; finding: (typeof validationResults)[number]["finding"] }[] = [];
+
+    if (validationResults.length > 0) {
+      const rows = validationResults.map((r) => ({
         review_id: reviewId,
-        file_path: f.file_path,
-        line_number: f.line_number,
-        category: f.category,
-        severity: f.severity,
-        explanation: f.explanation,
-        validated: false,
+        file_path: r.finding.file_path,
+        line_number: r.finding.line_number,
+        category: r.finding.category,
+        severity: r.finding.severity,
+        explanation: r.finding.explanation,
+        validated: r.valid,
         posted: false,
       }));
 
-      const { error: findingsError } = await supabase.from("review_findings").insert(rows);
+      const { data: inserted, error: findingsError } = await supabase
+        .from("review_findings")
+        .insert(rows)
+        .select();
+
       if (findingsError) throw findingsError;
+
+      inserted?.forEach((row, idx) => {
+        insertedRows.push({
+          id: row.id,
+          valid: validationResults[idx].valid,
+          finding: validationResults[idx].finding,
+        });
+      });
     }
 
-    // cost_usd is 0 for now since Groq's free tier has no per-token
-    // charge - the field exists so swapping to a paid provider/model
-    // later is a config change, not a schema change.
+    // Only validated findings ever get posted. Anything that failed
+    // validation is still stored (useful for your own eval/debugging
+    // later) but never reaches the actual pull request.
+    for (const row of insertedRows) {
+      if (!row.valid) continue;
+
+      try {
+        await postReviewComment({
+          owner,
+          repo,
+          prNumber,
+          commitId: commitSha,
+          filePath: row.finding.file_path,
+          line: row.finding.line_number,
+          body: `**[${row.finding.severity.toUpperCase()}] ${row.finding.category}** — flagged by ReviewSentinel\n\n${row.finding.explanation}`,
+          token,
+        });
+
+        await supabase.from("review_findings").update({ posted: true }).eq("id", row.id);
+      } catch (postErr) {
+        // One failed comment shouldn't take the whole review down -
+        // log it and keep going with the rest.
+        console.error(`Failed to post comment for finding ${row.id}:`, postErr);
+      }
+    }
+
     await supabase.from("usage_events").insert({
       review_id: reviewId,
       prompt_tokens: promptTokens,

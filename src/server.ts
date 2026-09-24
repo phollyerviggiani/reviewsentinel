@@ -88,6 +88,7 @@ app.post("/webhooks/github", async (request, reply) => {
     owner,
     repo: repoName,
     prNumber,
+    commitSha,
   }).catch((err) => {
     request.log.error(err, `processReview failed for review ${inserted.id}`);
   });
