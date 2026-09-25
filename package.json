@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "fetch-diff": "tsx scripts/test-fetch-diff.ts",
-    "webhook": "npx smee-client -u https://smee.io/k53RKvS9SjmV2RFp -t http://localhost:3000/webhooks/github"
+    "webhook": "npx smee-client -u https://smee.io/k53RKvS9SjmV2RFp -t http://localhost:3000/webhooks/github",
+    "eval": "tsx scripts/run-eval.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.0",
