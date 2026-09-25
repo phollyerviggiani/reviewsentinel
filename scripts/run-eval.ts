@@ -49,6 +49,16 @@ async function main() {
     const expected = new Set(testCase.expectedBuggyFiles);
     const allFiles = new Set([...flaggedFiles, ...expected]);
 
+    // Print the full finding whenever a "clean" file gets flagged - this
+    // is your window into WHY a false positive happened, not just that
+    // it happened.
+    if (expected.size === 0 && validated.length > 0) {
+      console.log(`  ⚠ Unexpected finding(s) on a clean PR:`);
+      for (const r of validated) {
+        console.log(`    ${r.finding.file_path}:${r.finding.line_number} [${r.finding.category}/${r.finding.severity}] - ${r.finding.explanation}`);
+      }
+    }
+
     let caseCaughtAll = true;
 
     for (const file of allFiles) {
