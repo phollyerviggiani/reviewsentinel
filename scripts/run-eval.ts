@@ -42,6 +42,13 @@ async function main() {
 
   for (const testCase of EVAL_CASES) {
     const diff = await fetchPullRequestDiff(owner, repo, testCase.prNumber, token);
+
+    // if no diff, error gracefully
+    if (!diff.trim()) {
+      throw new Error(
+        `PR #${testCase.prNumber} has an empty diff - eval case is invalid, fix the PR before running.`
+      );
+    }
     const { findings } = await reviewDiff(diff);
     const validated = validateFindings(diff, findings).filter((r) => r.valid);
 
@@ -77,9 +84,9 @@ async function main() {
 
     console.log(
       `PR #${testCase.prNumber} (${testCase.description}): ` +
-        `expected=[${[...expected].join(", ") || "none"}], ` +
-        `flagged=[${[...flaggedFiles].join(", ") || "none"}] ` +
-        `${caseCaughtAll ? "correct" : "MISSED"}`
+      `expected=[${[...expected].join(", ") || "none"}], ` +
+      `flagged=[${[...flaggedFiles].join(", ") || "none"}] ` +
+      `${caseCaughtAll ? "correct" : "MISSED"}`
     );
   }
 
