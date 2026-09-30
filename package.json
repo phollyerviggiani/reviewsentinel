@@ -10,7 +10,8 @@
     "test": "vitest run",
     "fetch-diff": "tsx scripts/test-fetch-diff.ts",
     "webhook": "npx smee-client -u https://smee.io/k53RKvS9SjmV2RFp -t http://localhost:3000/webhooks/github",
-    "eval": "tsx scripts/run-eval.ts"
+    "eval": "tsx scripts/run-eval.ts",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.0",
@@ -18,9 +19,12 @@
     "fastify": "^5.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^20.14.0",
+    "eslint": "^9.39.5",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.71.0",
     "vitest": "^2.0.0"
   }
 }
