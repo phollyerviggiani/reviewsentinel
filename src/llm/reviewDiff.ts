@@ -1,8 +1,5 @@
 import type { Finding, LLMResult } from "./types.js";
 
-// Deliberately conservative system prompt: a code review bot that
-// over-flags trains developers to ignore it, which is worse than one
-// that under-flags. "Fail closed" starts here, at the prompt level.
 const SYSTEM_PROMPT = `You are a careful senior code reviewer looking at a pull request diff.
 
 Only report REAL issues that are clearly visible in the diff itself. Never invent
@@ -15,9 +12,6 @@ speculative or stylistic nitpicks you are not confident about.
 If you find nothing worth flagging, call the tool with an empty findings array.
 Being conservative is correct: a missed issue is better than a false alarm.`;
 
-// Forcing tool_choice guarantees structured JSON output instead of
-// free-form text we'd have to parse with regex - this is the whole
-// point of using function calling here rather than a plain chat prompt.
 const FINDINGS_TOOL = {
   type: "function",
   function: {
@@ -31,26 +25,14 @@ const FINDINGS_TOOL = {
           items: {
             type: "object",
             properties: {
-              file_path: {
-                type: "string",
-                description: "Exact file path as it appears in the diff.",
-              },
+              file_path: { type: "string", description: "Exact file path as it appears in the diff." },
               line_number: {
                 type: "integer",
                 description: "Line number in the NEW version of the file, per the diff hunk.",
               },
-              category: {
-                type: "string",
-                enum: ["bug-risk", "security", "style"],
-              },
-              severity: {
-                type: "string",
-                enum: ["low", "medium", "high"],
-              },
-              explanation: {
-                type: "string",
-                description: "One or two sentences explaining the issue.",
-              },
+              category: { type: "string", enum: ["bug-risk", "security", "style"] },
+              severity: { type: "string", enum: ["low", "medium", "high"] },
+              explanation: { type: "string", description: "One or two sentences explaining the issue." },
             },
             required: ["file_path", "line_number", "category", "severity", "explanation"],
           },
@@ -61,6 +43,37 @@ const FINDINGS_TOOL = {
   },
 } as const;
 
+const MAX_ATTEMPTS = 2;
+
+const EMPTY_RESULT: LLMResult = {
+  findings: [],
+  promptTokens: 0,
+  completionTokens: 0,
+  latencyMs: 0,
+};
+
+// Only the shape of the Groq response we actually read - not a full
+// spec of every field the API can return. That's a deliberate, narrow
+// interface rather than "any", which is exactly the point.
+interface GroqToolCall {
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+interface GroqChatCompletionResponse {
+  choices?: {
+    message?: {
+      tool_calls?: GroqToolCall[];
+    };
+  }[];
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
+}
+
 export async function reviewDiff(diff: string): Promise<LLMResult> {
   const apiKey = process.env.GROQ_API_KEY;
   const model = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
@@ -69,38 +82,53 @@ export async function reviewDiff(diff: string): Promise<LLMResult> {
     throw new Error("GROQ_API_KEY is not set");
   }
 
-  const start = Date.now();
+  if (!diff.trim()) {
+    console.warn("reviewDiff: diff is empty, skipping LLM call");
+    return EMPTY_RESULT;
+  }
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `Review this diff:\n\n${diff}` },
-      ],
-      tools: [FINDINGS_TOOL],
-      tool_choice: { type: "function", function: { name: "report_findings" } },
-      temperature: 0, // deterministic-as-possible for a review tool, not a creative one
-    }),
-  });
+  const start = Date.now();
+  let res: Response | undefined;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: `Review this diff:\n\n${diff}` },
+        ],
+        tools: [FINDINGS_TOOL],
+        tool_choice: { type: "function", function: { name: "report_findings" } },
+        temperature: 0,
+      }),
+    });
+
+    if (res.ok) break;
+
+    const body = await res.text();
+    const isToolFailure = res.status === 400 && body.includes("tool_use_failed");
+    if (!isToolFailure) {
+      throw new Error(`Groq API error ${res.status}: ${body}`);
+    }
+
+    console.warn(`reviewDiff: tool_use_failed (attempt ${attempt}/${MAX_ATTEMPTS})`);
+  }
 
   const latencyMs = Date.now() - start;
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Groq API error ${res.status}: ${body}`);
+  if (!res || !res.ok) {
+    return { ...EMPTY_RESULT, latencyMs };
   }
 
-  const data: any = await res.json();
+  const data = (await res.json()) as GroqChatCompletionResponse;
   const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
 
-  // If the model didn't call the tool at all, treat it as "no findings"
-  // rather than throwing - fail closed, don't crash the pipeline.
   if (!toolCall) {
     return {
       findings: [],
@@ -115,7 +143,6 @@ export async function reviewDiff(diff: string): Promise<LLMResult> {
     const args = JSON.parse(toolCall.function.arguments);
     findings = Array.isArray(args.findings) ? args.findings : [];
   } catch {
-    // Malformed JSON from the model - again, fail closed rather than crash.
     findings = [];
   }
 

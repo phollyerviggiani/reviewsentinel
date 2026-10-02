@@ -4,13 +4,26 @@ import { verifyGithubSignature } from "./github/verifySignature.js";
 import { supabase } from "./db/supabase.js";
 import { processReview } from "./pipeline/processReview.js";
 
+interface GithubPullRequestWebhookPayload {
+  action: string;
+  repository: {
+    full_name: string;
+    name: string;
+    owner: { login: string };
+  };
+  pull_request: {
+    number: number;
+    head: { sha: string };
+  };
+}
+
 const app = Fastify({ logger: true });
 
 app.addContentTypeParser(
   "application/json",
   { parseAs: "string" },
   (req, body, done) => {
-    (req as any).rawBody = body as string;
+    req.rawBody = body as string;
     try {
       const json = (body as string).length ? JSON.parse(body as string) : {};
       done(null, json);
@@ -44,7 +57,7 @@ app.post("/webhooks/github", async (request, reply) => {
     return reply.code(202).send({ status: "ignored", reason: `unhandled event: ${event}` });
   }
 
-  const payload = request.body as any;
+  const payload = request.body as GithubPullRequestWebhookPayload;
 
   if (payload.action !== "opened" && payload.action !== "synchronize") {
     return reply.code(202).send({ status: "ignored", reason: `unhandled action: ${payload.action}` });
@@ -74,13 +87,6 @@ app.post("/webhooks/github", async (request, reply) => {
 
   request.log.info(`Recorded review ${inserted.id} for ${repoFullName}#${prNumber} @ ${commitSha}`);
 
-  // Respond to GitHub immediately - don't make it wait on the LLM call.
-  // GitHub times out webhook deliveries after ~10 seconds; an LLM call
-  // plus GitHub diff fetch can easily take longer than that. We reply
-  // first, then keep processing in the background. This is a deliberate
-  // "no queue needed yet" decision (see the architecture doc, section 5.8) -
-  // it's not durable against a server restart mid-review, which is a
-  // documented, honest limitation at this stage, not an oversight.
   reply.code(201).send({ status: "accepted", reviewId: inserted.id });
 
   processReview({
