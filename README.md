@@ -5,9 +5,6 @@ LLM's output as a claim to verify, not a fact to trust. Every finding is
 independently checked against the real diff before it's ever posted -
 citation *and* content are verified, not just "does this line exist."
 
-**Live demo:** _TBD UNTIL DEPLOYED_
-**Repo:** https://github.com/phollyerviggiani/reviewsentinel
-
 ## Why this exists
 
 Most "AI code review" demos are a single prompt wrapped around a diff.
@@ -87,22 +84,6 @@ why each of those was deliberately left out.
   a human happened to pick when planting a bug. This is a simplification,
   stated here rather than hidden.
 
-## Evaluation
-
-Run against `N` hand-labeled test PRs, `T` trials each (LLM output isn't
-fully deterministic even at temperature 0, so a single run is not a
-reliable number):
-
-```bash
-npm run eval
-```
-
-_Fill in your real numbers here, e.g.:_
-"Aggregate precision: X.XX, recall: X.XX across N cases x T trials.
-Precision stayed at/near 1.00 across all runs - every finding that
-passed validation was a real, correctly-cited issue. Recall varied
-more, particularly for [category], which reflects real inference-time
-non-determinism rather than a flaw in the validation layer itself."
 
 ## Known limitations
 
