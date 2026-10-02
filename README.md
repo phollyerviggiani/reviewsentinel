@@ -5,8 +5,8 @@ LLM's output as a claim to verify, not a fact to trust. Every finding is
 independently checked against the real diff before it's ever posted -
 citation *and* content are verified, not just "does this line exist."
 
-**Live demo:** _add your Render URL here once deployed_
-**Repo:** https://github.com/<your-username>/reviewsentinel
+**Live demo:** _TBD UNTIL DEPLOYED_
+**Repo:** https://github.com/phollyerviggiani/reviewsentinel
 
 ## Why this exists
 
